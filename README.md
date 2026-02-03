@@ -369,7 +369,7 @@ tel.Metric().IncrementCounter(ctx, "user.requests",
 )
 ```
 
-### Why?
+### Why Avoid Dynamic Metric Names?
 
 Metrics are cached (up to 10,000). Dynamic names exhaust the cache and hurt performance.
 
@@ -435,7 +435,7 @@ The test config:
 gintelemetry supports standard OpenTelemetry environment variables:
 
 | Variable | Description | Default | Example |
-|----------|-------------|---------|---------|
+| ---------- | ------------- | --------- | --------- |
 | `OTEL_SERVICE_NAME` | Service name | Required (or set in Config) | `my-api` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector endpoint | Required (or set in Config) | `localhost:4317` |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | Protocol (grpc/http) | grpc | `grpc` or `http` |
@@ -549,7 +549,7 @@ defer shutdown(ctx)
 ## API Reference
 
 | Category | Function | Description |
-|----------|----------|-------------|
+| ---------- | ---------- | ------------- |
 | **Setup** | `Start(ctx, config)` | Initialize everything |
 | **Attributes** | `Attr().String/Int/Bool(...)` | Unified attributes for all telemetry |
 | **Logging** | `Log().Info/Warn/Error/Debug(ctx, msg, ...)` | Structured logging |

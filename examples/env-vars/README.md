@@ -13,6 +13,7 @@ Demonstrates how to configure gintelemetry entirely through environment variable
 ## Why This Matters
 
 With environment variables, you can:
+
 - **Deploy the same binary** to different environments (dev/staging/prod)
 - **Change team/region** without rebuilding
 - **Use in containers** (Docker, Kubernetes) with different configs
@@ -185,6 +186,7 @@ export OTEL_RESOURCE_ATTRIBUTES="team=backend,environment=production"
 ### 1. Use Consistent Attribute Names
 
 Standardize across your organization:
+
 - `team` - Team name (backend, frontend, platform)
 - `environment` - Environment (dev, staging, production)
 - `region` - Region (us-east-1, eu-west-1, local)
