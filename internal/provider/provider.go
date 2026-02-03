@@ -12,7 +12,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.9.0"
 )
 
 type ProviderConfig struct {
@@ -28,7 +28,7 @@ type Providers struct {
 
 func NewResource(cfg ProviderConfig) (*resource.Resource, error) {
 	attrs := make([]attribute.KeyValue, 0, 1+len(cfg.GlobalAttributes))
-	attrs = append(attrs, semconv.ServiceName(cfg.ServiceName))
+	attrs = append(attrs, semconv.ServiceNameKey.String(cfg.ServiceName))
 	for k, v := range cfg.GlobalAttributes {
 		attrs = append(attrs, attribute.String(k, v))
 	}
