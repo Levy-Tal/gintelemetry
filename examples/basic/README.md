@@ -15,27 +15,27 @@ A simple hello world example demonstrating core gintelemetry features.
 
 ## Prerequisites
 
-You need an OpenTelemetry collector running. The easiest way is with Docker:
+This example uses **Docker Compose** to run both the OpenTelemetry Collector and Jaeger:
 
-### Using Jaeger All-in-One (includes collector and UI)
+- **OpenTelemetry Collector** - Receives all telemetry (traces, metrics, logs) from your app
+- **Jaeger** - Stores and visualizes traces
+
+### Start the Observability Stack
 
 ```bash
-docker run -d --name jaeger \
-  -p 16686:16686 \
-  -p 4317:4317 \
-  -e COLLECTOR_OTLP_ENABLED=true \
-  jaegertracing/all-in-one:latest
+cd examples/basic
+docker compose up -d
 ```
 
-Then visit <http://localhost:16686> to view traces.
+This starts:
 
-### Using OpenTelemetry Collector
+- **OpenTelemetry Collector** on ports 4317 (gRPC) and 4318 (HTTP)
+- **Jaeger UI** on port 16686
+
+### Stop the Stack
 
 ```bash
-docker run -d --name otel-collector \
-  -p 4317:4317 \
-  -p 4318:4318 \
-  otel/opentelemetry-collector:latest
+docker compose down
 ```
 
 ## Running the Example
@@ -87,10 +87,12 @@ This demonstrates:
 
 ## View the Results
 
-1. **Traces**: Open <http://localhost:16686> (if using Jaeger)
-2. **Service**: Select "basic-example" from the dropdown
-3. **Find Traces**: Click "Find Traces"
-4. **Explore**: Click on any trace to see spans, logs, and attributes
+### Traces in Jaeger UI
+
+1. Open <http://localhost:16686>
+2. Select **"basic-example"** from the service dropdown
+3. Click **"Find Traces"**
+4. Click on any trace to see spans, logs, and attributes
 
 You'll see:
 
@@ -98,6 +100,17 @@ You'll see:
 - Span attributes (endpoint, method, item.id, etc.)
 - Timing information
 - Error details (if you trigger an error)
+
+### Logs and Metrics
+
+Logs and metrics are sent to the OpenTelemetry Collector and output to its console:
+
+```bash
+# View collector logs (includes metrics and logs)
+docker compose logs -f otel-collector
+```
+
+You'll see your application logs and metrics in the collector output.
 
 ## What to Notice
 

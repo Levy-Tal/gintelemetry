@@ -22,15 +22,17 @@ With environment variables, you can:
 
 ## Running the Example
 
-### Start Jaeger
+### Start the Observability Stack
 
 ```bash
-docker run -d --name jaeger \
-  -p 16686:16686 \
-  -p 4317:4317 \
-  -e COLLECTOR_OTLP_ENABLED=true \
-  jaegertracing/all-in-one:latest
+cd examples/env-vars
+docker compose up -d
 ```
+
+This starts:
+
+- **OpenTelemetry Collector** on ports 4317 (gRPC) and 4318 (HTTP)
+- **Jaeger UI** at <http://localhost:16686>
 
 ### Run with Environment Variables
 
@@ -50,17 +52,24 @@ go run main.go
 curl http://localhost:8080/hello
 ```
 
-### View in Jaeger
+### View Results
 
-1. Open <http://localhost:16686>
-2. Select your service from the dropdown
-3. Click "Find Traces"
-4. Click on a trace
-5. Look at the **Process** section - you'll see:
+**Jaeger UI** (<http://localhost:16686>):
+
+1. Select your service from the dropdown
+2. Click "Find Traces"
+3. Click on a trace
+4. Look at the **Process** section - you'll see your global attributes:
    - `team=backend`
    - `environment=dev`
    - `region=local`
    - `version=dev`
+
+**Collector Logs** (metrics and logs):
+
+```bash
+docker compose logs -f otel-collector
+```
 
 ## Different Environments
 

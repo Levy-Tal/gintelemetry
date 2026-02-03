@@ -15,20 +15,22 @@ Demonstrates how to instrument database operations with tracing and metrics.
 
 ## Prerequisites
 
-Start the OpenTelemetry collector (Jaeger):
+This example uses **Docker Compose** to run the observability stack:
 
 ```bash
+cd examples/database
 docker compose up -d
 ```
 
-Or manually:
+This starts:
+
+- **OpenTelemetry Collector** - Receives all telemetry (traces, metrics, logs)
+- **Jaeger UI** - Visualizes traces at <http://localhost:16686>
+
+To stop:
 
 ```bash
-docker run -d --name jaeger \
-  -p 16686:16686 \
-  -p 4317:4317 \
-  -e COLLECTOR_OTLP_ENABLED=true \
-  jaegertracing/all-in-one:latest
+docker compose down
 ```
 
 ## Running the Example
@@ -50,6 +52,7 @@ curl http://localhost:8080/users
 ```
 
 Response:
+
 ```json
 [
   {
@@ -76,11 +79,13 @@ curl -X POST http://localhost:8080/users \
   -d '{"name":"John Doe","email":"john@example.com"}'
 ```
 
-## View in Jaeger
+## View the Results
 
-1. Open http://localhost:16686
-2. Select "database-example" service
-3. Click "Find Traces"
+### Traces in Jaeger UI
+
+1. Open <http://localhost:16686>
+2. Select **"database-example"** service
+3. Click **"Find Traces"**
 4. Explore traces to see:
    - `db.init` span (database initialization)
    - `db.seed` span (sample data insertion)
@@ -88,7 +93,21 @@ curl -X POST http://localhost:8080/users \
      - `db.operation`: SELECT/INSERT
      - `db.table`: users
      - `db.rows_returned`: count of rows
-   - `db.insert.duration` and `db.query.duration` timing
+   - Nested span relationships showing query flow
+
+### Metrics and Logs
+
+View metrics and logs in the OpenTelemetry Collector output:
+
+```bash
+docker compose logs -f otel-collector
+```
+
+You'll see:
+
+- `db.insert.duration` and `db.query.duration` histogram metrics
+- Application logs with trace correlation
+- Database operation counts and timings
 
 ## Key Patterns
 
@@ -128,6 +147,7 @@ tel.Metric().IncrementCounter(ctx, "db.queries.total",
 ```
 
 This allows you to:
+
 - Count queries by operation type
 - Track success/failure rates
 - Monitor which tables are accessed most
