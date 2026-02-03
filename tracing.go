@@ -3,36 +3,57 @@ package gintelemetry
 import (
 	"context"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
-var tracer = otel.Tracer("gintelemetry")
+type TraceAPI struct {
+	tracer trace.Tracer
+}
 
-// TraceAPI provides functions for distributed tracing.
-type TraceAPI struct{}
-
-// Trace is the namespace for all tracing operations.
-var Trace = TraceAPI{}
-
-// Attribute represents a key-value pair for telemetry metadata.
 type Attribute = attribute.KeyValue
 
-// StartSpan starts a new span and returns a context with the span and a stop function.
-// The caller MUST defer the stop function.
-func (TraceAPI) StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, func()) {
-	ctx, span := tracer.Start(ctx, name, opts...)
+// StartSpan creates a new span and returns a context containing the span and a function to end it.
+// The returned context should be used for all operations within this span's scope.
+// Always call the returned function (typically with defer) to properly end the span.
+//
+// Example:
+//
+//	ctx, stop := tel.Trace().StartSpan(ctx, "database.query")
+//	defer stop()
+//	// ... perform database query ...
+func (t TraceAPI) StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, func()) {
+	ctx, span := t.tracer.Start(ctx, name, opts...)
 	return ctx, func() { span.End() }
 }
 
-// StartSpanWithAttributes starts a new span with the given name and attributes.
-func (TraceAPI) StartSpanWithAttributes(ctx context.Context, name string, attrs ...Attribute) (context.Context, func()) {
-	return Trace.StartSpan(ctx, name, trace.WithAttributes(attrs...))
+// StartSpanWithAttributes creates a new span with attributes and returns a context and end function.
+// This is a convenience method that combines StartSpan with initial attributes.
+//
+// Example:
+//
+//	ctx, stop := tel.Trace().StartSpanWithAttributes(ctx, "db.query",
+//	    tel.Attr().String("db.system", "postgres"),
+//	    tel.Attr().String("db.operation", "SELECT"),
+//	)
+//	defer stop()
+func (t TraceAPI) StartSpanWithAttributes(ctx context.Context, name string, attrs ...Attribute) (context.Context, func()) {
+	return t.StartSpan(ctx, name, trace.WithAttributes(attrs...))
 }
 
-// RecordError records an error on the span associated with the context.
+// RecordError records an error in the current span if one exists and is recording.
+// If no span exists or the span is not recording, this is a safe no-op.
+// This method never returns an error itself and never panics.
+//
+// The error is recorded with the span status set to Error.
+//
+// Example:
+//
+//	if err != nil {
+//	    tel.Trace().RecordError(ctx, err)
+//	    return err
+//	}
 func (TraceAPI) RecordError(ctx context.Context, err error) {
 	span := trace.SpanFromContext(ctx)
 	if span.IsRecording() {
@@ -41,7 +62,16 @@ func (TraceAPI) RecordError(ctx context.Context, err error) {
 	}
 }
 
-// SetAttributes sets attributes on the span associated with the context.
+// SetAttributes adds attributes to the current span if one exists and is recording.
+// If no span exists or the span is not recording, this is a safe no-op.
+// The context must contain an active span for attributes to be recorded.
+//
+// Example:
+//
+//	tel.Trace().SetAttributes(ctx,
+//	    tel.Attr().String("user.id", userID),
+//	    tel.Attr().Int("items.count", len(items)),
+//	)
 func (TraceAPI) SetAttributes(ctx context.Context, attrs ...Attribute) {
 	span := trace.SpanFromContext(ctx)
 	if span.IsRecording() {
@@ -49,7 +79,15 @@ func (TraceAPI) SetAttributes(ctx context.Context, attrs ...Attribute) {
 	}
 }
 
-// AddEvent adds an event to the span associated with the context.
+// AddEvent adds an event to the current span if one exists and is recording.
+// Events represent significant points in time within a span's duration.
+// If no span exists or the span is not recording, this is a safe no-op.
+//
+// Example:
+//
+//	tel.Trace().AddEvent(ctx, "cache.miss",
+//	    tel.Attr().String("cache.key", key),
+//	)
 func (TraceAPI) AddEvent(ctx context.Context, name string, attrs ...Attribute) {
 	span := trace.SpanFromContext(ctx)
 	if span.IsRecording() {
@@ -57,7 +95,13 @@ func (TraceAPI) AddEvent(ctx context.Context, name string, attrs ...Attribute) {
 	}
 }
 
-// SetStatus sets the status of the span associated with the context.
+// SetStatus sets the status of the current span if one exists and is recording.
+// Use this to mark a span as successful (StatusOK), failed (StatusError), or unset (StatusUnset).
+// If no span exists or the span is not recording, this is a safe no-op.
+//
+// Example:
+//
+//	tel.Trace().SetStatus(ctx, gintelemetry.StatusOK, "operation completed successfully")
 func (TraceAPI) SetStatus(ctx context.Context, code codes.Code, description string) {
 	span := trace.SpanFromContext(ctx)
 	if span.IsRecording() {
@@ -66,43 +110,12 @@ func (TraceAPI) SetStatus(ctx context.Context, code codes.Code, description stri
 }
 
 // SpanFromContext returns the current span from the context.
+// This is useful for advanced use cases where you need direct access to the span.
 func (TraceAPI) SpanFromContext(ctx context.Context) trace.Span {
 	return trace.SpanFromContext(ctx)
 }
 
-// Attribute helper functions for creating telemetry metadata.
-
-// String creates a string attribute.
-func (TraceAPI) String(key, value string) Attribute {
-	return attribute.String(key, value)
-}
-
-// Int creates an int attribute.
-func (TraceAPI) Int(key string, value int) Attribute {
-	return attribute.Int(key, value)
-}
-
-// Int64 creates an int64 attribute.
-func (TraceAPI) Int64(key string, value int64) Attribute {
-	return attribute.Int64(key, value)
-}
-
-// Float64 creates a float64 attribute.
-func (TraceAPI) Float64(key string, value float64) Attribute {
-	return attribute.Float64(key, value)
-}
-
-// Bool creates a boolean attribute.
-func (TraceAPI) Bool(key string, value bool) Attribute {
-	return attribute.Bool(key, value)
-}
-
-// Strings creates a string slice attribute.
-func (TraceAPI) Strings(key string, values []string) Attribute {
-	return attribute.StringSlice(key, values)
-}
-
-// Status codes for spans.
+// Status codes for span status
 const (
 	StatusUnset = codes.Unset
 	StatusError = codes.Error

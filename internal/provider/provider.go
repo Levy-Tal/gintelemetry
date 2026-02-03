@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -13,87 +15,87 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
-// ProviderConfig holds configuration for telemetry providers.
 type ProviderConfig struct {
-	// ServiceName is the name of the service.
-	ServiceName string
-	// GlobalAttributes are resource-level attributes added to all telemetry.
+	ServiceName      string
 	GlobalAttributes map[string]string
 }
 
-// Providers holds all OpenTelemetry providers.
 type Providers struct {
 	TracerProvider *sdktrace.TracerProvider
 	MeterProvider  *sdkmetric.MeterProvider
 	LoggerProvider *sdklog.LoggerProvider
 }
 
-// NewResource creates a new OpenTelemetry resource with service information.
 func NewResource(cfg ProviderConfig) (*resource.Resource, error) {
-	attrs := []attribute.KeyValue{
-		semconv.ServiceName(cfg.ServiceName),
-	}
-
-	// Add global attributes
+	attrs := make([]attribute.KeyValue, 0, 1+len(cfg.GlobalAttributes))
+	attrs = append(attrs, semconv.ServiceName(cfg.ServiceName))
 	for k, v := range cfg.GlobalAttributes {
 		attrs = append(attrs, attribute.String(k, v))
 	}
-
-	return resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			attrs...,
-		),
-	)
+	return resource.Merge(resource.Default(), resource.NewWithAttributes(semconv.SchemaURL, attrs...))
 }
 
-// NewTracerProvider creates a new tracer provider.
 func NewTracerProvider(ctx context.Context, exporter sdktrace.SpanExporter, res *resource.Resource) *sdktrace.TracerProvider {
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(res),
-	)
-	otel.SetTracerProvider(tp)
-	return tp
+	return sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
 }
 
-// NewMeterProvider creates a new meter provider.
 func NewMeterProvider(ctx context.Context, exporter sdkmetric.Exporter, res *resource.Resource) *sdkmetric.MeterProvider {
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)),
-		sdkmetric.WithResource(res),
-	)
-	otel.SetMeterProvider(mp)
-	return mp
+	return sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)), sdkmetric.WithResource(res))
 }
 
-// NewLoggerProvider creates a new logger provider.
 func NewLoggerProvider(ctx context.Context, exporter sdklog.Exporter, res *resource.Resource) *sdklog.LoggerProvider {
-	lp := sdklog.NewLoggerProvider(
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
-		sdklog.WithResource(res),
-	)
-	global.SetLoggerProvider(lp)
-	return lp
+	return sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)), sdklog.WithResource(res))
 }
 
-// Shutdown gracefully shuts down all providers.
+func (p *Providers) SetGlobalProviders() {
+	if p.TracerProvider != nil {
+		otel.SetTracerProvider(p.TracerProvider)
+	}
+	if p.MeterProvider != nil {
+		otel.SetMeterProvider(p.MeterProvider)
+	}
+	if p.LoggerProvider != nil {
+		global.SetLoggerProvider(p.LoggerProvider)
+	}
+}
+
 func (p *Providers) Shutdown(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
 	var errs []error
+	if p.TracerProvider != nil {
+		if err := p.TracerProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("tracer shutdown: %w", err))
+		}
+	}
+	if p.MeterProvider != nil {
+		if err := p.MeterProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("meter shutdown: %w", err))
+		}
+	}
+	if p.LoggerProvider != nil {
+		if err := p.LoggerProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("logger shutdown: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
 
-	if err := p.TracerProvider.Shutdown(ctx); err != nil {
-		errs = append(errs, err)
+func (p *Providers) ForceFlush(ctx context.Context) error {
+	if p == nil {
+		return nil
 	}
-	if err := p.MeterProvider.Shutdown(ctx); err != nil {
-		errs = append(errs, err)
+	var errs []error
+	if p.TracerProvider != nil {
+		if err := p.TracerProvider.ForceFlush(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("tracer flush: %w", err))
+		}
 	}
-	if err := p.LoggerProvider.Shutdown(ctx); err != nil {
-		errs = append(errs, err)
+	if p.MeterProvider != nil {
+		if err := p.MeterProvider.ForceFlush(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("meter flush: %w", err))
+		}
 	}
-
-	if len(errs) > 0 {
-		return errs[0]
-	}
-	return nil
+	return errors.Join(errs...)
 }

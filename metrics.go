@@ -1,115 +1,217 @@
 package gintelemetry
 
 import (
+	"context"
+	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 )
 
-var (
-	meter        = otel.Meter("gintelemetry")
-	counterCache sync.Map
-	gaugeCache   sync.Map
-	histoCache   sync.Map
-)
+const maxCachedMetrics = 10000
+
+type metricCacheKey struct {
+	name       string
+	valueType  string
+	metricType string
+}
+
+type metricCacheEntry struct {
+	metric   any
+	lastUsed atomic.Int64
+}
 
 // MetricAPI provides functions for recording metrics.
-type MetricAPI struct{}
+//
+// IMPORTANT: Metrics are cached internally (up to 10,000 unique combinations).
+// Do NOT use dynamic values in metric names. Use attributes instead:
+//
+//	✗ BAD:  tel.Metric().Counter("user_" + userID).Add(ctx, 1)
+//	✓ GOOD: tel.Metric().IncrementCounter(ctx, "user_events", tel.Attr().String("user.id", userID))
+//
+// If you exceed the cache limit, metrics will still work but won't be cached,
+// which may impact performance.
+//
+// Context Usage:
+// All metric recording methods accept a context for trace correlation.
+// If the context contains an active span, metrics can be correlated with traces.
+// Using context.Background() is safe but loses correlation benefits.
+type MetricAPI struct {
+	meter        metric.Meter
+	logger       *slog.Logger
+	counterCache *sync.Map
+	gaugeCache   *sync.Map
+	histoCache   *sync.Map
+	cacheSize    *atomic.Int64
+}
 
-// Metric is the namespace for all metrics operations.
-var Metric = MetricAPI{}
-
-// Attribute represents a key-value pair for telemetry metadata.
 type MetricAttribute = attribute.KeyValue
 
-// Counter returns or creates an Int64 counter. Counters are cached.
-func (MetricAPI) Counter(name string, opts ...metric.Int64CounterOption) metric.Int64Counter {
-	if c, ok := counterCache.Load(name); ok {
-		return c.(metric.Int64Counter)
+func (m MetricAPI) getOrCreateMetric(
+	name, valueType, metricType string,
+	cache *sync.Map,
+	create func(string) (any, error),
+) any {
+	key := metricCacheKey{name: name, valueType: valueType, metricType: metricType}
+
+	if cached, ok := cache.Load(key); ok {
+		if entry, ok := cached.(*metricCacheEntry); ok {
+			entry.lastUsed.Store(time.Now().UnixNano())
+			return entry.metric
+		}
+		if m.logger != nil {
+			m.logger.Error("metric cache type mismatch", "name", name, "type", metricType)
+		}
+		cache.Delete(key)
+		m.cacheSize.Add(-1)
 	}
-	counter, _ := meter.Int64Counter(name, opts...)
-	counterCache.Store(name, counter)
-	return counter
-}
 
-// Histogram returns or creates an Int64 histogram. Histograms are cached.
-func (MetricAPI) Histogram(name string, opts ...metric.Int64HistogramOption) metric.Int64Histogram {
-	if h, ok := histoCache.Load(name); ok {
-		return h.(metric.Int64Histogram)
+	if m.cacheSize.Load() >= maxCachedMetrics {
+		if m.logger != nil {
+			m.logger.Error("metric cache limit exceeded", "name", name, "limit", maxCachedMetrics)
+		}
+		metric, _ := create(name)
+		return metric
 	}
-	histogram, _ := meter.Int64Histogram(name, opts...)
-	histoCache.Store(name, histogram)
-	return histogram
-}
 
-// Gauge returns or creates an Int64 gauge. Gauges are cached.
-func (MetricAPI) Gauge(name string, opts ...metric.Int64GaugeOption) metric.Int64Gauge {
-	if g, ok := gaugeCache.Load(name); ok {
-		return g.(metric.Int64Gauge)
+	metric, err := create(name)
+	if err != nil && m.logger != nil {
+		m.logger.Warn("failed to create metric", "name", name, "type", metricType, "error", err)
 	}
-	gauge, _ := meter.Int64Gauge(name, opts...)
-	gaugeCache.Store(name, gauge)
-	return gauge
-}
 
-// Float64Counter returns or creates a Float64 counter. Counters are cached.
-func (MetricAPI) Float64Counter(name string, opts ...metric.Float64CounterOption) metric.Float64Counter {
-	key := "float64:" + name
-	if c, ok := counterCache.Load(key); ok {
-		return c.(metric.Float64Counter)
+	entry := &metricCacheEntry{metric: metric}
+	entry.lastUsed.Store(time.Now().UnixNano())
+
+	actual, loaded := cache.LoadOrStore(key, entry)
+	if !loaded {
+		m.cacheSize.Add(1)
 	}
-	counter, _ := meter.Float64Counter(name, opts...)
-	counterCache.Store(key, counter)
-	return counter
-}
-
-// Float64Histogram returns or creates a Float64 histogram. Histograms are cached.
-func (MetricAPI) Float64Histogram(name string, opts ...metric.Float64HistogramOption) metric.Float64Histogram {
-	key := "float64:" + name
-	if h, ok := histoCache.Load(key); ok {
-		return h.(metric.Float64Histogram)
+	if actualEntry, ok := actual.(*metricCacheEntry); ok {
+		return actualEntry.metric
 	}
-	histogram, _ := meter.Float64Histogram(name, opts...)
-	histoCache.Store(key, histogram)
-	return histogram
+	return metric
 }
 
-// Float64Gauge returns or creates a Float64 gauge. Gauges are cached.
-func (MetricAPI) Float64Gauge(name string, opts ...metric.Float64GaugeOption) metric.Float64Gauge {
-	key := "float64:" + name
-	if g, ok := gaugeCache.Load(key); ok {
-		return g.(metric.Float64Gauge)
-	}
-	gauge, _ := meter.Float64Gauge(name, opts...)
-	gaugeCache.Store(key, gauge)
-	return gauge
+func (m MetricAPI) Counter(name string, opts ...metric.Int64CounterOption) metric.Int64Counter {
+	result := m.getOrCreateMetric(name, "int64", "counter", m.counterCache, func(n string) (any, error) {
+		counter, err := m.meter.Int64Counter(n, opts...)
+		if err != nil {
+			noopMeter := noop.NewMeterProvider().Meter("")
+			counter, _ = noopMeter.Int64Counter(n)
+		}
+		return counter, err
+	})
+	return result.(metric.Int64Counter)
 }
 
-// Attribute helper functions for metrics.
-
-// String creates a string attribute.
-func (MetricAPI) String(key, value string) MetricAttribute {
-	return attribute.String(key, value)
+func (m MetricAPI) Histogram(name string, opts ...metric.Int64HistogramOption) metric.Int64Histogram {
+	result := m.getOrCreateMetric(name, "int64", "histogram", m.histoCache, func(n string) (any, error) {
+		histogram, err := m.meter.Int64Histogram(n, opts...)
+		if err != nil {
+			noopMeter := noop.NewMeterProvider().Meter("")
+			histogram, _ = noopMeter.Int64Histogram(n)
+		}
+		return histogram, err
+	})
+	return result.(metric.Int64Histogram)
 }
 
-// Int creates an int attribute.
-func (MetricAPI) Int(key string, value int) MetricAttribute {
-	return attribute.Int(key, value)
+func (m MetricAPI) Gauge(name string, opts ...metric.Int64GaugeOption) metric.Int64Gauge {
+	result := m.getOrCreateMetric(name, "int64", "gauge", m.gaugeCache, func(n string) (any, error) {
+		gauge, err := m.meter.Int64Gauge(n, opts...)
+		if err != nil {
+			noopMeter := noop.NewMeterProvider().Meter("")
+			gauge, _ = noopMeter.Int64Gauge(n)
+		}
+		return gauge, err
+	})
+	return result.(metric.Int64Gauge)
 }
 
-// Int64 creates an int64 attribute.
-func (MetricAPI) Int64(key string, value int64) MetricAttribute {
-	return attribute.Int64(key, value)
+func (m MetricAPI) Float64Counter(name string, opts ...metric.Float64CounterOption) metric.Float64Counter {
+	result := m.getOrCreateMetric(name, "float64", "counter", m.counterCache, func(n string) (any, error) {
+		counter, err := m.meter.Float64Counter(n, opts...)
+		if err != nil {
+			noopMeter := noop.NewMeterProvider().Meter("")
+			counter, _ = noopMeter.Float64Counter(n)
+		}
+		return counter, err
+	})
+	return result.(metric.Float64Counter)
 }
 
-// Float64 creates a float64 attribute.
-func (MetricAPI) Float64(key string, value float64) MetricAttribute {
-	return attribute.Float64(key, value)
+func (m MetricAPI) Float64Histogram(name string, opts ...metric.Float64HistogramOption) metric.Float64Histogram {
+	result := m.getOrCreateMetric(name, "float64", "histogram", m.histoCache, func(n string) (any, error) {
+		histogram, err := m.meter.Float64Histogram(n, opts...)
+		if err != nil {
+			noopMeter := noop.NewMeterProvider().Meter("")
+			histogram, _ = noopMeter.Float64Histogram(n)
+		}
+		return histogram, err
+	})
+	return result.(metric.Float64Histogram)
 }
 
-// Bool creates a boolean attribute.
-func (MetricAPI) Bool(key string, value bool) MetricAttribute {
-	return attribute.Bool(key, value)
+func (m MetricAPI) Float64Gauge(name string, opts ...metric.Float64GaugeOption) metric.Float64Gauge {
+	result := m.getOrCreateMetric(name, "float64", "gauge", m.gaugeCache, func(n string) (any, error) {
+		gauge, err := m.meter.Float64Gauge(n, opts...)
+		if err != nil {
+			noopMeter := noop.NewMeterProvider().Meter("")
+			gauge, _ = noopMeter.Float64Gauge(n)
+		}
+		return gauge, err
+	})
+	return result.(metric.Float64Gauge)
+}
+
+// IncrementCounter increments a counter by 1 with optional attributes.
+// This is a convenience method equivalent to Counter(name).Add(ctx, 1, metric.WithAttributes(attrs...)).
+func (m MetricAPI) IncrementCounter(ctx context.Context, name string, attrs ...MetricAttribute) {
+	m.Counter(name).Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// AddCounter adds a value to a counter with optional attributes.
+// This is a convenience method equivalent to Counter(name).Add(ctx, value, metric.WithAttributes(attrs...)).
+func (m MetricAPI) AddCounter(ctx context.Context, name string, value int64, attrs ...MetricAttribute) {
+	m.Counter(name).Add(ctx, value, metric.WithAttributes(attrs...))
+}
+
+// RecordHistogram records a histogram value with optional attributes.
+// This is a convenience method equivalent to Histogram(name).Record(ctx, value, metric.WithAttributes(attrs...)).
+func (m MetricAPI) RecordHistogram(ctx context.Context, name string, value int64, attrs ...MetricAttribute) {
+	m.Histogram(name).Record(ctx, value, metric.WithAttributes(attrs...))
+}
+
+// RecordDuration records a duration as milliseconds to a histogram with optional attributes.
+// This is a convenience method that converts the duration to milliseconds and records it.
+func (m MetricAPI) RecordDuration(ctx context.Context, name string, duration time.Duration, attrs ...MetricAttribute) {
+	m.Histogram(name).Record(ctx, duration.Milliseconds(), metric.WithAttributes(attrs...))
+}
+
+// RecordGauge records a gauge value with optional attributes.
+// This is a convenience method equivalent to Gauge(name).Record(ctx, value, metric.WithAttributes(attrs...)).
+func (m MetricAPI) RecordGauge(ctx context.Context, name string, value int64, attrs ...MetricAttribute) {
+	m.Gauge(name).Record(ctx, value, metric.WithAttributes(attrs...))
+}
+
+// AddFloat64Counter adds a value to a float64 counter with optional attributes.
+// This is a convenience method equivalent to Float64Counter(name).Add(ctx, value, metric.WithAttributes(attrs...)).
+func (m MetricAPI) AddFloat64Counter(ctx context.Context, name string, value float64, attrs ...MetricAttribute) {
+	m.Float64Counter(name).Add(ctx, value, metric.WithAttributes(attrs...))
+}
+
+// RecordFloat64Histogram records a float64 histogram value with optional attributes.
+// This is a convenience method equivalent to Float64Histogram(name).Record(ctx, value, metric.WithAttributes(attrs...)).
+func (m MetricAPI) RecordFloat64Histogram(ctx context.Context, name string, value float64, attrs ...MetricAttribute) {
+	m.Float64Histogram(name).Record(ctx, value, metric.WithAttributes(attrs...))
+}
+
+// RecordFloat64Gauge records a float64 gauge value with optional attributes.
+// This is a convenience method equivalent to Float64Gauge(name).Record(ctx, value, metric.WithAttributes(attrs...)).
+func (m MetricAPI) RecordFloat64Gauge(ctx context.Context, name string, value float64, attrs ...MetricAttribute) {
+	m.Float64Gauge(name).Record(ctx, value, metric.WithAttributes(attrs...))
 }

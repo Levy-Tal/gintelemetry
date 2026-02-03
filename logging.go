@@ -5,9 +5,6 @@ import (
 	"log/slog"
 )
 
-var logger *slog.Logger
-
-// Log levels.
 const (
 	LevelDebug = slog.LevelDebug
 	LevelInfo  = slog.LevelInfo
@@ -15,25 +12,22 @@ const (
 	LevelError = slog.LevelError
 )
 
-// Level represents a log level.
 type Level = slog.Level
 
-func setLogger(otelLogger *slog.Logger, level Level) {
+func applyLevelFilter(otelLogger *slog.Logger, level Level) *slog.Logger {
 	handler := &levelFilterHandler{
 		handler: otelLogger.Handler(),
 		level:   level,
 	}
-	logger = slog.New(handler)
-	slog.SetDefault(logger)
+	return slog.New(handler)
 }
 
-// levelFilterHandler wraps an slog.Handler and filters by level.
 type levelFilterHandler struct {
 	handler slog.Handler
 	level   Level
 }
 
-func (h *levelFilterHandler) Enabled(ctx context.Context, level Level) bool {
+func (h *levelFilterHandler) Enabled(_ context.Context, level Level) bool {
 	return level >= h.level
 }
 
@@ -42,56 +36,87 @@ func (h *levelFilterHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *levelFilterHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &levelFilterHandler{
-		handler: h.handler.WithAttrs(attrs),
-		level:   h.level,
-	}
+	return &levelFilterHandler{handler: h.handler.WithAttrs(attrs), level: h.level}
 }
 
 func (h *levelFilterHandler) WithGroup(name string) slog.Handler {
-	return &levelFilterHandler{
-		handler: h.handler.WithGroup(name),
-		level:   h.level,
+	return &levelFilterHandler{handler: h.handler.WithGroup(name), level: h.level}
+}
+
+type LogAPI struct {
+	logger *slog.Logger
+}
+
+func (l LogAPI) Logger() *slog.Logger {
+	return l.logger
+}
+
+// Info logs an informational message with trace correlation.
+// The context should contain an active span from the request or manually created span.
+// If ctx has no span, logs will still be recorded but without trace correlation.
+// Using context.Background() is safe but loses correlation benefits.
+//
+// Example:
+//
+//	tel.Log().Info(ctx, "user logged in", "user_id", userID, "ip", clientIP)
+func (l LogAPI) Info(ctx context.Context, msg string, args ...any) {
+	if l.logger != nil {
+		l.logger.InfoContext(ctx, msg, args...)
 	}
 }
 
-// LogAPI provides structured logging functions with automatic trace correlation.
-type LogAPI struct{}
-
-// Log is the namespace for all logging operations.
-var Log = LogAPI{}
-
-// Logger returns the configured slog logger with trace correlation.
-func (LogAPI) Logger() *slog.Logger {
-	return logger
+// Warn logs a warning message with trace correlation.
+// The context should contain an active span from the request or manually created span.
+// If ctx has no span, logs will still be recorded but without trace correlation.
+// Using context.Background() is safe but loses correlation benefits.
+//
+// Example:
+//
+//	tel.Log().Warn(ctx, "rate limit approaching", "current", count, "limit", maxCount)
+func (l LogAPI) Warn(ctx context.Context, msg string, args ...any) {
+	if l.logger != nil {
+		l.logger.WarnContext(ctx, msg, args...)
+	}
 }
 
-// Info logs an informational message.
-func (LogAPI) Info(ctx context.Context, msg string, args ...any) {
-	logger.InfoContext(ctx, msg, args...)
+// Error logs an error message with trace correlation.
+// The context should contain an active span from the request or manually created span.
+// If ctx has no span, logs will still be recorded but without trace correlation.
+// Using context.Background() is safe but loses correlation benefits.
+//
+// Example:
+//
+//	tel.Log().Error(ctx, "database query failed", "error", err.Error(), "query", query)
+func (l LogAPI) Error(ctx context.Context, msg string, args ...any) {
+	if l.logger != nil {
+		l.logger.ErrorContext(ctx, msg, args...)
+	}
 }
 
-// Warn logs a warning message.
-func (LogAPI) Warn(ctx context.Context, msg string, args ...any) {
-	logger.WarnContext(ctx, msg, args...)
+// Debug logs a debug message with trace correlation.
+// The context should contain an active span from the request or manually created span.
+// If ctx has no span, logs will still be recorded but without trace correlation.
+// Using context.Background() is safe but loses correlation benefits.
+//
+// Example:
+//
+//	tel.Log().Debug(ctx, "cache hit", "key", cacheKey, "ttl", ttl)
+func (l LogAPI) Debug(ctx context.Context, msg string, args ...any) {
+	if l.logger != nil {
+		l.logger.DebugContext(ctx, msg, args...)
+	}
 }
 
-// Error logs an error message.
-func (LogAPI) Error(ctx context.Context, msg string, args ...any) {
-	logger.ErrorContext(ctx, msg, args...)
+func (l LogAPI) With(args ...any) *slog.Logger {
+	if l.logger != nil {
+		return l.logger.With(args...)
+	}
+	return nil
 }
 
-// Debug logs a debug message.
-func (LogAPI) Debug(ctx context.Context, msg string, args ...any) {
-	logger.DebugContext(ctx, msg, args...)
-}
-
-// With returns a new logger with the given attributes pre-set.
-func (LogAPI) With(args ...any) *slog.Logger {
-	return logger.With(args...)
-}
-
-// WithGroup returns a new logger with the given group name.
-func (LogAPI) WithGroup(name string) *slog.Logger {
-	return logger.WithGroup(name)
+func (l LogAPI) WithGroup(name string) *slog.Logger {
+	if l.logger != nil {
+		return l.logger.WithGroup(name)
+	}
+	return nil
 }
