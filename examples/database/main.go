@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"time"
 
 	"github.com/Levy-Tal/gintelemetry"
 	"github.com/gin-gonic/gin"
@@ -112,7 +110,7 @@ func main() {
 }
 
 func initDB(ctx context.Context, tel *gintelemetry.Telemetry) (*sql.DB, error) {
-	return tel.WithSpan(ctx, "db.init", func(ctx context.Context) (*sql.DB, error) {
+	return WithSpan(tel, ctx, "db.init", func(ctx context.Context) (*sql.DB, error) {
 		tel.Log().Info(ctx, "initializing database")
 
 		db, err := sql.Open("sqlite3", ":memory:")
@@ -148,7 +146,7 @@ func initDB(ctx context.Context, tel *gintelemetry.Telemetry) (*sql.DB, error) {
 }
 
 func insertSampleData(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB) error {
-	return tel.WithSpan(ctx, "db.seed", func(ctx context.Context) error {
+	_, err := WithSpan(tel, ctx, "db.seed", func(ctx context.Context) (struct{}, error) {
 		users := []struct{ name, email string }{
 			{"Alice Smith", "alice@example.com"},
 			{"Bob Johnson", "bob@example.com"},
@@ -164,13 +162,14 @@ func insertSampleData(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.
 				return err
 			})
 			if err != nil {
-				return err
+				return struct{}{}, err
 			}
 		}
 
 		tel.Log().Info(ctx, "sample data inserted", "count", len(users))
-		return nil
+		return struct{}{}, nil
 	})
+	return err
 }
 
 func getUsers(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB) ([]User, error) {
@@ -297,14 +296,15 @@ func createUser(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB, na
 	return id, nil
 }
 
-// WithSpan is a helper that returns a value instead of just error
-func (t *gintelemetry.Telemetry) WithSpan[T any](ctx context.Context, spanName string, fn func(context.Context) (T, error)) (T, error) {
-	newCtx, stop := t.Trace().StartSpan(ctx, spanName)
+// WithSpan is a helper that returns a value instead of just error.
+// It's a standalone generic function since Go doesn't support generic methods.
+func WithSpan[T any](tel *gintelemetry.Telemetry, ctx context.Context, spanName string, fn func(context.Context) (T, error)) (T, error) {
+	newCtx, stop := tel.Trace().StartSpan(ctx, spanName)
 	defer stop()
 
 	result, err := fn(newCtx)
 	if err != nil {
-		t.Trace().RecordError(newCtx, err)
+		tel.Trace().RecordError(newCtx, err)
 	}
 
 	return result, err

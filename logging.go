@@ -3,6 +3,7 @@ package gintelemetry
 import (
 	"context"
 	"log/slog"
+	"os"
 )
 
 const (
@@ -14,33 +15,60 @@ const (
 
 type Level = slog.Level
 
+// applyLevelFilter creates a logger that writes to both OTLP collector and stdout.
+// This provides dual output: structured logs to the collector and console output for development.
 func applyLevelFilter(otelLogger *slog.Logger, level Level) *slog.Logger {
-	handler := &levelFilterHandler{
-		handler: otelLogger.Handler(),
-		level:   level,
+	// Create stdout handler for console output
+	stdoutHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+	})
+
+	// Combine OTLP and stdout handlers
+	multiHandler := &multiHandler{
+		handlers: []slog.Handler{
+			otelLogger.Handler(),
+			stdoutHandler,
+		},
+		level: level,
 	}
-	return slog.New(handler)
+
+	return slog.New(multiHandler)
 }
 
-type levelFilterHandler struct {
-	handler slog.Handler
-	level   Level
+// multiHandler writes to multiple handlers simultaneously
+type multiHandler struct {
+	handlers []slog.Handler
+	level    Level
 }
 
-func (h *levelFilterHandler) Enabled(_ context.Context, level Level) bool {
+func (h *multiHandler) Enabled(ctx context.Context, level Level) bool {
 	return level >= h.level
 }
 
-func (h *levelFilterHandler) Handle(ctx context.Context, r slog.Record) error {
-	return h.handler.Handle(ctx, r)
+func (h *multiHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, handler := range h.handlers {
+		if err := handler.Handle(ctx, r.Clone()); err != nil {
+			// Continue to other handlers even if one fails
+			continue
+		}
+	}
+	return nil
 }
 
-func (h *levelFilterHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &levelFilterHandler{handler: h.handler.WithAttrs(attrs), level: h.level}
+func (h *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newHandlers := make([]slog.Handler, len(h.handlers))
+	for i, handler := range h.handlers {
+		newHandlers[i] = handler.WithAttrs(attrs)
+	}
+	return &multiHandler{handlers: newHandlers, level: h.level}
 }
 
-func (h *levelFilterHandler) WithGroup(name string) slog.Handler {
-	return &levelFilterHandler{handler: h.handler.WithGroup(name), level: h.level}
+func (h *multiHandler) WithGroup(name string) slog.Handler {
+	newHandlers := make([]slog.Handler, len(h.handlers))
+	for i, handler := range h.handlers {
+		newHandlers[i] = handler.WithGroup(name)
+	}
+	return &multiHandler{handlers: newHandlers, level: h.level}
 }
 
 type LogAPI struct {
