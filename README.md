@@ -39,6 +39,8 @@ func main() {
     
     tel, router, err := gintelemetry.Start(ctx, gintelemetry.Config{
         ServiceName: "my-api",
+        Endpoint:    "localhost:4317",
+        Insecure:    true, // Use insecure connection for local development
         LogLevel:    gintelemetry.LevelInfo,
     })
     if err != nil {
@@ -74,6 +76,7 @@ func main() {
 config := gintelemetry.Config{
     ServiceName: "my-service",
     Endpoint:    "localhost:4317",          // gRPC default port
+    Insecure:    true,                       // Use insecure for local development
     LogLevel:    gintelemetry.LevelDebug,
 }
 ```

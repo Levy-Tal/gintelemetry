@@ -12,6 +12,7 @@ func main() {
 	tel, router, err := gintelemetry.Start(ctx, gintelemetry.Config{
 		ServiceName: "testing-example",
 		Endpoint:    "localhost:4317",
+		Insecure:    true, // Use insecure connection for local development
 		LogLevel:    gintelemetry.LevelInfo,
 	})
 	if err != nil {

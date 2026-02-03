@@ -22,6 +22,7 @@ func main() {
 		// ServiceName comes from OTEL_SERVICE_NAME
 		// Endpoint comes from OTEL_EXPORTER_OTLP_ENDPOINT
 		// Global attributes come from OTEL_RESOURCE_ATTRIBUTES
+		Insecure: true, // Use insecure connection for local development
 		LogLevel: gintelemetry.LevelInfo,
 	})
 	if err != nil {

@@ -1,12 +1,24 @@
-version: '3.8'
-
 services:
+  # OpenTelemetry Collector receives all telemetry
+  otel-collector:
+    image: otel/opentelemetry-collector:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+    networks:
+      - telemetry
+    depends_on:
+      - jaeger
+
+  # Jaeger receives traces from collector
   jaeger:
     image: jaegertracing/all-in-one:latest
     ports:
       - "16686:16686"  # Jaeger UI
-      - "4317:4317"    # OTLP gRPC receiver
-      - "4318:4318"    # OTLP HTTP receiver
+      - "14250:14250"  # gRPC
     environment:
       - COLLECTOR_OTLP_ENABLED=true
     networks:

@@ -12,7 +12,6 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.9.0"
 )
 
 type ProviderConfig struct {
@@ -26,13 +25,17 @@ type Providers struct {
 	LoggerProvider *sdklog.LoggerProvider
 }
 
+// NewResource creates an OpenTelemetry resource with service name and global attributes.
+// Uses empty schema URL to avoid conflicts with different OpenTelemetry SDK versions.
 func NewResource(cfg ProviderConfig) (*resource.Resource, error) {
 	attrs := make([]attribute.KeyValue, 0, 1+len(cfg.GlobalAttributes))
-	attrs = append(attrs, semconv.ServiceNameKey.String(cfg.ServiceName))
+	// Use standard OpenTelemetry attribute key directly (version-agnostic)
+	attrs = append(attrs, attribute.String("service.name", cfg.ServiceName))
 	for k, v := range cfg.GlobalAttributes {
 		attrs = append(attrs, attribute.String(k, v))
 	}
-	return resource.Merge(resource.Default(), resource.NewWithAttributes(semconv.SchemaURL, attrs...))
+	// Empty schema URL prevents version conflicts with user dependencies
+	return resource.Merge(resource.Default(), resource.NewWithAttributes("", attrs...))
 }
 
 func NewTracerProvider(ctx context.Context, exporter sdktrace.SpanExporter, res *resource.Resource) *sdktrace.TracerProvider {
