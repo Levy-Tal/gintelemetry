@@ -374,7 +374,7 @@ func TestHandler(t *testing.T) {
 ### Core
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `Start(ctx, config)` | Initialize telemetry and return Telemetry instance + Gin router |
 | `Shutdown(ctx)` | Gracefully shutdown telemetry |
 | `Flush(ctx)` | Force flush telemetry data |
@@ -382,7 +382,7 @@ func TestHandler(t *testing.T) {
 ### Telemetry
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `Log()` | Get logging API |
 | `Metric()` | Get metrics API |
 | `Trace()` | Get tracing API |
@@ -394,7 +394,7 @@ func TestHandler(t *testing.T) {
 ### LogAPI
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `Debug(ctx, msg, attrs...)` | Log debug message |
 | `Info(ctx, msg, attrs...)` | Log info message |
 | `Warn(ctx, msg, attrs...)` | Log warning message |
@@ -406,7 +406,7 @@ func TestHandler(t *testing.T) {
 ### MetricAPI
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `Counter(name, opts...)` | Get Int64Counter instrument |
 | `Histogram(name, opts...)` | Get Int64Histogram instrument |
 | `Gauge(name, opts...)` | Get Int64Gauge instrument |
@@ -417,7 +417,7 @@ func TestHandler(t *testing.T) {
 ### TraceAPI
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `StartSpan(ctx, name, opts...)` | Start a span and return (ctx, stop func) |
 | `SetAttributes(ctx, attrs...)` | Set attributes on current span |
 | `AddEvent(ctx, name, attrs...)` | Add event to current span |
@@ -428,7 +428,7 @@ func TestHandler(t *testing.T) {
 ### AttributeAPI
 
 | Method | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `String(key, value)` | Create string attribute |
 | `Int(key, value)` | Create int attribute |
 | `Int64(key, value)` | Create int64 attribute |

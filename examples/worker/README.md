@@ -265,7 +265,7 @@ Errors are automatically:
 
 ## Architecture
 
-```
+``` yaml
 ┌─────────────────────────────────────────────────┐
 │              Worker Application                  │
 │                                                  │

@@ -1,0 +1,10 @@
+# Binaries
+main
+*.exe
+
+# Go build cache
+go.sum
+
+# IDE
+.vscode/
+.idea/
