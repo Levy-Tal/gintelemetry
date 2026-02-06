@@ -1,6 +1,6 @@
 # Database Example
 
-Demonstrates how to instrument database operations with tracing and metrics.
+Demonstrates how to instrument database operations with tracing and metrics using custom helper functions.
 
 ## What This Example Shows
 
@@ -10,8 +10,8 @@ Demonstrates how to instrument database operations with tracing and metrics.
 - Error recording for failed queries
 - Query metrics (count, duration)
 - Context propagation through database calls
-- Using `MeasureDuration` for timing
-- Using `WithSpan` for automatic span management
+- Custom `measureDuration` helper for timing
+- Custom `WithSpan` generic helper for automatic span management
 
 ## Prerequisites
 
@@ -60,8 +60,7 @@ Response:
     "name": "Alice Smith",
     "email": "alice@example.com",
     "created_at": "2024-01-01 12:00:00"
-  },
-  ...
+  }
 ]
 ```
 
@@ -111,19 +110,65 @@ You'll see:
 
 ## Key Patterns
 
+### Custom Helper: WithSpan (Generic)
+
+This example demonstrates a generic helper that can return values:
+
+```go
+func WithSpan[T any](tel *gintelemetry.Telemetry, ctx context.Context, spanName string, fn func(context.Context) (T, error)) (T, error) {
+    newCtx, stop := tel.Trace().StartSpan(ctx, spanName)
+    defer stop()
+    
+    result, err := fn(newCtx)
+    if err != nil {
+        tel.Trace().RecordError(newCtx, err)
+    }
+    
+    return result, err
+}
+```
+
+Usage:
+
+```go
+db, err := WithSpan(tel, ctx, "db.init", func(ctx context.Context) (*sql.DB, error) {
+    return sql.Open("sqlite3", ":memory:")
+})
+```
+
+### Custom Helper: measureDuration
+
+```go
+func measureDuration(tel *gintelemetry.Telemetry, ctx context.Context, metricName string, fn func() error) error {
+    start := time.Now()
+    err := fn()
+    
+    histogram := tel.Metric().Histogram(metricName)
+    histogram.Record(ctx, time.Since(start).Milliseconds())
+    
+    if err != nil {
+        tel.Trace().RecordError(ctx, err)
+    }
+    
+    return err
+}
+```
+
 ### Database Query Tracing
 
 ```go
 func getUsers(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB) ([]User, error) {
     // Create span with query details
-    ctx, stop := tel.Trace().StartSpanWithAttributes(ctx, "db.query",
-        tel.Attr().String("db.operation", "SELECT"),
-        tel.Attr().String("db.table", "users"),
+    ctx, stop := tel.Trace().StartSpan(ctx, "db.query",
+        trace.WithAttributes(
+            tel.Attr().String("db.operation", "SELECT"),
+            tel.Attr().String("db.table", "users"),
+        ),
     )
     defer stop()
 
     // Measure query duration
-    err := tel.MeasureDuration(ctx, "db.query.duration", func() error {
+    err := measureDuration(tel, ctx, "db.query.duration", func() error {
         // Execute query...
     })
 
@@ -139,11 +184,12 @@ func getUsers(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB) ([]U
 ### Metrics for Query Monitoring
 
 ```go
-tel.Metric().IncrementCounter(ctx, "db.queries.total",
+counter := tel.Metric().Counter("db.queries.total")
+counter.Add(ctx, 1, metric.WithAttributes(
     tel.Attr().String("operation", "SELECT"),
     tel.Attr().String("table", "users"),
     tel.Attr().String("status", "success"),
-)
+))
 ```
 
 This allows you to:
@@ -158,9 +204,10 @@ This allows you to:
 ```go
 if err != nil {
     tel.Trace().RecordError(ctx, err)
-    tel.Metric().IncrementCounter(ctx, "db.queries.total",
+    counter := tel.Metric().Counter("db.queries.total")
+    counter.Add(ctx, 1, metric.WithAttributes(
         tel.Attr().String("status", "error"),
-    )
+    ))
     return nil, err
 }
 ```
@@ -187,9 +234,8 @@ db.SetConnMaxLifetime(5 * time.Minute)
 
 ```go
 stats := db.Stats()
-tel.Metric().RecordGauge(ctx, "db.connections.open", int64(stats.OpenConnections))
-tel.Metric().RecordGauge(ctx, "db.connections.idle", int64(stats.Idle))
-tel.Metric().RecordGauge(ctx, "db.connections.in_use", int64(stats.InUse))
+gauge := tel.Metric().Gauge("db.connections.open")
+gauge.Record(ctx, int64(stats.OpenConnections))
 ```
 
 ### Sanitize Query Parameters
@@ -211,5 +257,6 @@ tel.Attr().String("user.id", userID)
 
 ## Next Steps
 
-- Check `examples/http-client/` for outbound HTTP tracing
+- Check `examples/basic/` for simpler examples
+- Check `examples/worker/` for background job patterns
 - Check `examples/testing/` for testing database code

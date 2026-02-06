@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Application metrics exported through OTEL Collector
+  # This is where your app's telemetry metrics appear:
+  # - scraper.duration, scraper.metrics_count (from scraper)
+  # - worker.duration, messages.processed (from queue worker)
+  # - health.* (from health checker)
+  - job_name: "worker-app-metrics"
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # Jaeger's internal metrics (optional - for monitoring Jaeger itself)
+  - job_name: "jaeger-internal"
+    static_configs:
+      - targets: ["jaeger:14269"]

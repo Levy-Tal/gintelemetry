@@ -10,7 +10,7 @@ A simple hello world example demonstrating core gintelemetry features.
 - Counter metrics with attributes
 - Manual span creation
 - Error recording in spans
-- Convenience helpers (`MeasureDuration`, `WithSpan`)
+- Custom helper functions (`measureDuration`)
 - Unified attribute API
 
 ## Prerequisites
@@ -82,7 +82,7 @@ curl http://localhost:8080/measure
 
 This demonstrates:
 
-- `MeasureDuration` convenience helper
+- Custom `measureDuration` helper function
 - Automatic duration recording
 
 ## View the Results
@@ -119,6 +119,7 @@ You'll see your application logs and metrics in the collector output.
 3. **Attributes**: All spans include relevant attributes (ids, endpoints, etc.)
 4. **Metrics**: Counters and histograms are recorded with attributes
 5. **Error Recording**: Errors are automatically captured in spans
+6. **Custom Helpers**: The example shows how to build your own helper functions on top of the simple API
 
 ## Configuration
 
@@ -129,19 +130,12 @@ The example uses:
 - Info log level
 - Insecure connection (for local development)
 
-For production, you'd add TLS:
-
-```go
-tel, router, err := gintelemetry.Start(ctx, gintelemetry.Config{
-    ServiceName: "my-service",
-    Endpoint:    "collector.example.com:4317",
-}.WithTrustedCA("/path/to/ca.crt"))
-```
+For production, you'd configure TLS through OpenTelemetry SDK environment variables or use secure endpoints.
 
 ## Next Steps
 
 Check out other examples:
 
-- `examples/database/` - Database query tracing
-- `examples/http-client/` - Outbound HTTP request tracing
+- `examples/database/` - Database query tracing with custom helpers
+- `examples/worker/` - Background jobs and workers
 - `examples/testing/` - How to test instrumented code

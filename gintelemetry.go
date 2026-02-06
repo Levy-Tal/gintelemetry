@@ -1,4 +1,4 @@
-// Package gintelemetry provides opinionated OpenTelemetry bootstrap for Gin applications.
+// Package gintelemetry provides simple OpenTelemetry bootstrap for Gin applications.
 package gintelemetry
 
 import (
@@ -7,14 +7,20 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/Levy-Tal/gintelemetry/internal/exporter"
-	"github.com/Levy-Tal/gintelemetry/internal/provider"
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -23,14 +29,11 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const (
-	metricEvictionInterval = 10 * time.Minute
-	metricTTL              = 1 * time.Hour
-)
-
 type Telemetry struct {
 	serviceName     string
-	providers       *provider.Providers
+	tracerProvider  *sdktrace.TracerProvider
+	meterProvider   *sdkmetric.MeterProvider
+	loggerProvider  *sdklog.LoggerProvider
 	logger          *slog.Logger
 	meter           metric.Meter
 	tracer          trace.Tracer
@@ -38,184 +41,216 @@ type Telemetry struct {
 	shutdownOnce    sync.Once
 	shutdownErr     error
 	shutdownDone    chan struct{}
-	counterCache    sync.Map
-	gaugeCache      sync.Map
-	histoCache      sync.Map
-	metricCacheSize atomic.Int64
-	evictionCtx     context.Context
-	evictionCancel  context.CancelFunc
-	evictionDone    sync.WaitGroup
 }
 
 func Start(ctx context.Context, cfg Config) (*Telemetry, *gin.Engine, error) {
-	cfg = cfg.copy()
-
-	validatedCfg, err := cfg.validate()
-	if err != nil {
+	if err := cfg.validate(); err != nil {
 		return nil, nil, err
 	}
 
-	exporterCfg := validatedCfg.buildExporterConfig()
-	shutdownTimeout := validatedCfg.getShutdownTimeout()
-	retries := validatedCfg.getExporterRetries()
-
-	res, err := provider.NewResource(provider.ProviderConfig{
-		ServiceName:      validatedCfg.ServiceName,
-		GlobalAttributes: validatedCfg.GlobalAttributes,
-	})
+	// Create resource with service name and global attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("service.name", cfg.ServiceName),
+	}
+	for k, v := range cfg.GlobalAttributes {
+		attrs = append(attrs, attribute.String(k, v))
+	}
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes("", attrs...),
+	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create resource: %w", err)
 	}
 
-	providers, cleanup, err := initializeProvidersWithCleanup(ctx, exporterCfg, res, shutdownTimeout, retries)
-	defer func() {
-		if providers == nil && cleanup != nil {
-			_ = cleanup()
+	// Create exporters based on protocol
+	var traceExporter sdktrace.SpanExporter
+	var metricExporter sdkmetric.Exporter
+	var logExporter sdklog.Exporter
+
+	if cfg.Protocol == ProtocolHTTP {
+		// HTTP exporters
+		traceOpts := []otlptracehttp.Option{
+			otlptracehttp.WithEndpoint(cfg.Endpoint),
 		}
-	}()
-	if err != nil {
-		if cleanupErr := cleanup(); cleanupErr != nil {
-			return nil, nil, fmt.Errorf("%w (cleanup error: %v)", err, cleanupErr)
+		if cfg.Insecure {
+			traceOpts = append(traceOpts, otlptracehttp.WithInsecure())
 		}
-		return nil, nil, err
+		traceExporter, err = otlptracehttp.New(ctx, traceOpts...)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create trace exporter: %w", err)
+		}
+
+		metricOpts := []otlpmetrichttp.Option{
+			otlpmetrichttp.WithEndpoint(cfg.Endpoint),
+		}
+		if cfg.Insecure {
+			metricOpts = append(metricOpts, otlpmetrichttp.WithInsecure())
+		}
+		metricExporter, err = otlpmetrichttp.New(ctx, metricOpts...)
+		if err != nil {
+			_ = traceExporter.Shutdown(ctx)
+			return nil, nil, fmt.Errorf("failed to create metric exporter: %w", err)
+		}
+
+		logOpts := []otlploghttp.Option{
+			otlploghttp.WithEndpoint(cfg.Endpoint),
+		}
+		if cfg.Insecure {
+			logOpts = append(logOpts, otlploghttp.WithInsecure())
+		}
+		logExporter, err = otlploghttp.New(ctx, logOpts...)
+		if err != nil {
+			_ = traceExporter.Shutdown(ctx)
+			_ = metricExporter.Shutdown(ctx)
+			return nil, nil, fmt.Errorf("failed to create log exporter: %w", err)
+		}
+	} else {
+		// gRPC exporters (default)
+		traceOpts := []otlptracegrpc.Option{
+			otlptracegrpc.WithEndpoint(cfg.Endpoint),
+		}
+		if cfg.Insecure {
+			traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
+		}
+		traceExporter, err = otlptracegrpc.New(ctx, traceOpts...)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create trace exporter: %w", err)
+		}
+
+		metricOpts := []otlpmetricgrpc.Option{
+			otlpmetricgrpc.WithEndpoint(cfg.Endpoint),
+		}
+		if cfg.Insecure {
+			metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
+		}
+		metricExporter, err = otlpmetricgrpc.New(ctx, metricOpts...)
+		if err != nil {
+			_ = traceExporter.Shutdown(ctx)
+			return nil, nil, fmt.Errorf("failed to create metric exporter: %w", err)
+		}
+
+		logOpts := []otlploggrpc.Option{
+			otlploggrpc.WithEndpoint(cfg.Endpoint),
+		}
+		if cfg.Insecure {
+			logOpts = append(logOpts, otlploggrpc.WithInsecure())
+		}
+		logExporter, err = otlploggrpc.New(ctx, logOpts...)
+		if err != nil {
+			_ = traceExporter.Shutdown(ctx)
+			_ = metricExporter.Shutdown(ctx)
+			return nil, nil, fmt.Errorf("failed to create log exporter: %w", err)
+		}
 	}
 
-	logger := otelslog.NewLogger(validatedCfg.ServiceName, otelslog.WithLoggerProvider(providers.LoggerProvider))
-	logger = applyLevelFilter(logger, validatedCfg.getLogLevel())
-	evictionCtx, evictionCancel := context.WithCancel(context.Background())
+	// Create providers
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(traceExporter),
+		sdktrace.WithResource(res),
+	)
+
+	meterProvider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)),
+		sdkmetric.WithResource(res),
+	)
+
+	loggerProvider := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)),
+		sdklog.WithResource(res),
+	)
+
+	// Create logger with dual output (OTLP + stdout)
+	logger := otelslog.NewLogger(cfg.ServiceName, otelslog.WithLoggerProvider(loggerProvider))
+	logger = applyLevelFilter(logger, cfg.getLogLevel())
 
 	t := &Telemetry{
-		serviceName:     validatedCfg.ServiceName,
-		providers:       providers,
+		serviceName:     cfg.ServiceName,
+		tracerProvider:  tracerProvider,
+		meterProvider:   meterProvider,
+		loggerProvider:  loggerProvider,
 		logger:          logger,
-		meter:           providers.MeterProvider.Meter(validatedCfg.ServiceName),
-		tracer:          providers.TracerProvider.Tracer(validatedCfg.ServiceName),
-		shutdownTimeout: validatedCfg.getShutdownTimeout(),
+		meter:           meterProvider.Meter(cfg.ServiceName),
+		tracer:          tracerProvider.Tracer(cfg.ServiceName),
+		shutdownTimeout: cfg.getShutdownTimeout(),
 		shutdownDone:    make(chan struct{}),
-		evictionCtx:     evictionCtx,
-		evictionCancel:  evictionCancel,
-	}
-	t.startMetricEviction()
-
-	if validatedCfg.SetGlobalProvider {
-		providers.SetGlobalProviders()
 	}
 
+	// Set global providers if requested
+	if cfg.SetGlobalProvider {
+		otel.SetTracerProvider(tracerProvider)
+		otel.SetMeterProvider(meterProvider)
+		global.SetLoggerProvider(loggerProvider)
+	}
+
+	// Create Gin router with recovery and tracing middleware
 	router := gin.New()
-	router.Use(gin.Recovery(), otelgin.Middleware(validatedCfg.ServiceName,
-		otelgin.WithTracerProvider(providers.TracerProvider)))
+	router.Use(gin.Recovery(), otelgin.Middleware(cfg.ServiceName,
+		otelgin.WithTracerProvider(tracerProvider)))
 
 	return t, router, nil
 }
 
-func initializeProvidersWithCleanup(
-	ctx context.Context,
-	exporterCfg exporter.ExporterConfig,
-	res *resource.Resource,
-	shutdownTimeout time.Duration,
-	retries int,
-) (*provider.Providers, func() error, error) {
-	var traceExp sdktrace.SpanExporter
-	var metricExp sdkmetric.Exporter
-	var logExp sdklog.Exporter
-	var err error
-
-	cleanup := func() error {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		var errs []error
-		if traceExp != nil {
-			if err := traceExp.Shutdown(cleanupCtx); err != nil {
-				errs = append(errs, fmt.Errorf("trace exporter shutdown: %w", err))
-			}
-		}
-		if metricExp != nil {
-			if err := metricExp.Shutdown(cleanupCtx); err != nil {
-				errs = append(errs, fmt.Errorf("metric exporter shutdown: %w", err))
-			}
-		}
-		if logExp != nil {
-			if err := logExp.Shutdown(cleanupCtx); err != nil {
-				errs = append(errs, fmt.Errorf("log exporter shutdown: %w", err))
-			}
-		}
-		return errors.Join(errs...)
-	}
-
-	if retries > 0 {
-		traceExp, err = exporter.NewTraceExporterWithRetry(ctx, exporterCfg, retries)
-	} else {
-		traceExp, err = exporter.NewTraceExporter(ctx, exporterCfg)
-	}
-	if err != nil || traceExp == nil {
-		return nil, cleanup, fmt.Errorf("failed to create trace exporter: %w", err)
-	}
-
-	if retries > 0 {
-		metricExp, err = exporter.NewMetricExporterWithRetry(ctx, exporterCfg, retries)
-	} else {
-		metricExp, err = exporter.NewMetricExporter(ctx, exporterCfg)
-	}
-	if err != nil || metricExp == nil {
-		return nil, cleanup, fmt.Errorf("failed to create metric exporter: %w", err)
-	}
-
-	if retries > 0 {
-		logExp, err = exporter.NewLogExporterWithRetry(ctx, exporterCfg, retries)
-	} else {
-		logExp, err = exporter.NewLogExporter(ctx, exporterCfg)
-	}
-	if err != nil || logExp == nil {
-		return nil, cleanup, fmt.Errorf("failed to create log exporter: %w", err)
-	}
-
-	providers := &provider.Providers{
-		TracerProvider: provider.NewTracerProvider(ctx, traceExp, res),
-		MeterProvider:  provider.NewMeterProvider(ctx, metricExp, res),
-		LoggerProvider: provider.NewLoggerProvider(ctx, logExp, res),
-	}
-
-	return providers, cleanup, nil
-}
-
 func (t *Telemetry) Flush(ctx context.Context) error {
-	if t == nil || t.providers == nil {
+	if t == nil {
 		return nil
 	}
-	start := time.Now()
+
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, t.shutdownTimeout)
 		defer cancel()
 	}
-	err := t.providers.ForceFlush(ctx)
-	if duration := time.Since(start); duration > t.shutdownTimeout/2 && t.logger != nil {
-		t.logger.Warn("slow telemetry flush", "duration_ms", duration.Milliseconds(), "timeout_ms", t.shutdownTimeout.Milliseconds())
+
+	var errs []error
+	if t.tracerProvider != nil {
+		if err := t.tracerProvider.ForceFlush(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("tracer flush: %w", err))
+		}
 	}
-	return err
+	if t.meterProvider != nil {
+		if err := t.meterProvider.ForceFlush(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("meter flush: %w", err))
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 func (t *Telemetry) Shutdown(ctx context.Context) error {
-	if t == nil || t.providers == nil {
+	if t == nil {
 		return nil
 	}
+
 	t.shutdownOnce.Do(func() {
 		defer close(t.shutdownDone)
-		start := time.Now()
-		if t.evictionCancel != nil {
-			t.evictionCancel()
-			t.evictionDone.Wait()
-		}
+
 		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, t.shutdownTimeout)
 			defer cancel()
 		}
-		t.shutdownErr = t.providers.Shutdown(ctx)
-		if duration := time.Since(start); duration > t.shutdownTimeout/2 && t.logger != nil {
-			t.logger.Warn("slow telemetry shutdown", "duration_ms", duration.Milliseconds(), "timeout_ms", t.shutdownTimeout.Milliseconds())
+
+		var errs []error
+		if t.tracerProvider != nil {
+			if err := t.tracerProvider.Shutdown(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("tracer shutdown: %w", err))
+			}
 		}
+		if t.meterProvider != nil {
+			if err := t.meterProvider.Shutdown(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("meter shutdown: %w", err))
+			}
+		}
+		if t.loggerProvider != nil {
+			if err := t.loggerProvider.Shutdown(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("logger shutdown: %w", err))
+			}
+		}
+
+		t.shutdownErr = errors.Join(errs...)
 	})
+
 	return t.shutdownErr
 }
 
@@ -237,146 +272,31 @@ func (t *Telemetry) Trace() TraceAPI {
 }
 
 func (t *Telemetry) Metric() MetricAPI {
-	return MetricAPI{
-		meter:        t.meter,
-		logger:       t.logger,
-		counterCache: &t.counterCache,
-		gaugeCache:   &t.gaugeCache,
-		histoCache:   &t.histoCache,
-		cacheSize:    &t.metricCacheSize,
-	}
+	return MetricAPI{meter: t.meter}
 }
 
 // Attr returns the unified attribute builder for use across all telemetry types.
-// Attributes created with this API work for tracing, metrics, and logging.
-//
-// Example:
-//
-//	attrs := []attribute.KeyValue{
-//	    tel.Attr().String("user.id", "123"),
-//	    tel.Attr().Int("status", 200),
-//	}
-//	tel.Trace().SetAttributes(ctx, attrs...)
-//	tel.Metric().Counter("requests").Add(ctx, 1, metric.WithAttributes(attrs...))
 func (t *Telemetry) Attr() AttributeAPI {
 	return AttributeAPI{}
 }
 
-// MeasureDuration executes fn and records its duration to a histogram metric.
-// If fn returns an error, it's automatically recorded in the current span (if one exists).
-//
-// Example:
-//
-//	err := tel.MeasureDuration(ctx, "db.query.duration", func() error {
-//	    return db.Query(ctx, ...)
-//	})
-func (t *Telemetry) MeasureDuration(ctx context.Context, metricName string, fn func() error) error {
-	start := time.Now()
-	err := fn()
-	duration := time.Since(start)
-
-	t.Metric().RecordDuration(ctx, metricName, duration)
-
-	if err != nil {
-		t.Trace().RecordError(ctx, err)
-	}
-
-	return err
-}
-
-// TraceFunction creates a span, executes fn with the span context, and ends the span.
-// Errors returned by fn are automatically recorded in the span.
-//
-// Example:
-//
-//	err := tel.TraceFunction(ctx, "process.order", func(ctx context.Context) error {
-//	    tel.Log().Info(ctx, "processing order")
-//	    return processOrder(ctx, orderID)
-//	})
-func (t *Telemetry) TraceFunction(ctx context.Context, spanName string, fn func(context.Context) error) error {
-	newCtx, stop := t.Trace().StartSpan(ctx, spanName)
-	defer stop()
-
-	err := fn(newCtx)
-	if err != nil {
-		t.Trace().RecordError(newCtx, err)
-	}
-
-	return err
-}
-
-// WithSpan creates a span, executes fn with the span context, and ends the span.
-// This is an alias for TraceFunction for more ergonomic usage.
-//
-// Example:
-//
-//	err := tel.WithSpan(ctx, "database.query", func(ctx context.Context) error {
-//	    return db.Query(ctx, query)
-//	})
-func (t *Telemetry) WithSpan(ctx context.Context, spanName string, fn func(context.Context) error) error {
-	return t.TraceFunction(ctx, spanName, fn)
-}
-
 func (t *Telemetry) TracerProvider() *sdktrace.TracerProvider {
-	if t == nil || t.providers == nil {
+	if t == nil {
 		return nil
 	}
-	return t.providers.TracerProvider
+	return t.tracerProvider
 }
 
 func (t *Telemetry) MeterProvider() *sdkmetric.MeterProvider {
-	if t == nil || t.providers == nil {
+	if t == nil {
 		return nil
 	}
-	return t.providers.MeterProvider
+	return t.meterProvider
 }
 
 func (t *Telemetry) LoggerProvider() *sdklog.LoggerProvider {
-	if t == nil || t.providers == nil {
+	if t == nil {
 		return nil
 	}
-	return t.providers.LoggerProvider
-}
-
-func (t *Telemetry) startMetricEviction() {
-	t.evictionDone.Add(1)
-	go func() {
-		defer t.evictionDone.Done()
-		ticker := time.NewTicker(metricEvictionInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				t.evictStaleMetrics()
-			case <-t.evictionCtx.Done():
-				return
-			}
-		}
-	}()
-}
-
-func (t *Telemetry) evictStaleMetrics() {
-	cutoff := time.Now().UnixNano() - int64(metricTTL)
-	evicted := 0
-
-	evictFromCache := func(cache *sync.Map) {
-		cache.Range(func(key, value any) bool {
-			if entry, ok := value.(*metricCacheEntry); ok && entry.lastUsed.Load() < cutoff {
-				cache.Delete(key)
-				evicted++
-			}
-			return true
-		})
-	}
-
-	evictFromCache(&t.counterCache)
-	evictFromCache(&t.histoCache)
-	evictFromCache(&t.gaugeCache)
-
-	if evicted > 0 {
-		t.metricCacheSize.Add(-int64(evicted))
-		if t.logger != nil {
-			t.logger.Debug("evicted stale metrics", "evicted", evicted, "remaining", t.metricCacheSize.Load())
-		}
-	}
+	return t.loggerProvider
 }

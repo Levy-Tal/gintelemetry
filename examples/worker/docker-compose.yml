@@ -1,0 +1,51 @@
+services:
+  # Jaeger - All-in-one for traces and UI
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14250:14250"  # Jaeger gRPC receiver (internal)
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - METRICS_STORAGE_TYPE=prometheus
+    networks:
+      - telemetry
+
+  # OpenTelemetry Collector - Receives telemetry and routes to backends
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC (application connects here)
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Prometheus metrics from collector itself
+      - "8889:8889"   # Prometheus exporter for application metrics
+    depends_on:
+      - jaeger
+    networks:
+      - telemetry
+
+  # Prometheus (optional - for metrics visualization)
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"  # Prometheus UI
+    networks:
+      - telemetry
+
+networks:
+  telemetry:
+    driver: bridge
+
+volumes:
+  prometheus-data:

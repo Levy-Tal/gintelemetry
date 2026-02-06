@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/Levy-Tal/gintelemetry"
 	"github.com/gin-gonic/gin"
@@ -98,7 +99,7 @@ func main() {
 		}
 
 		tel.Log().Info(ctx, "user created", "user_id", userID)
-		tel.Metric().IncrementCounter(ctx, "users.created",
+		tel.Metric().AddCounter(ctx, "users.created", 1,
 			tel.Attr().String("status", "success"),
 		)
 
@@ -119,7 +120,7 @@ func initDB(ctx context.Context, tel *gintelemetry.Telemetry) (*sql.DB, error) {
 		}
 
 		// Create schema with timing
-		err = tel.MeasureDuration(ctx, "db.schema.create", func() error {
+		err = measureDuration(tel, ctx, "db.schema.create", func() error {
 			_, err := db.ExecContext(ctx, `
 				CREATE TABLE users (
 					id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,7 +155,7 @@ func insertSampleData(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.
 		}
 
 		for _, u := range users {
-			err := tel.MeasureDuration(ctx, "db.insert.duration", func() error {
+			err := measureDuration(tel, ctx, "db.insert.duration", func() error {
 				_, err := db.ExecContext(ctx,
 					"INSERT INTO users (name, email) VALUES (?, ?)",
 					u.name, u.email,
@@ -173,7 +174,7 @@ func insertSampleData(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.
 }
 
 func getUsers(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB) ([]User, error) {
-	ctx, stop := tel.Trace().StartSpanWithAttributes(ctx, "db.query",
+	ctx, stop := tel.Trace().StartSpan(ctx, "db.query",
 		tel.Attr().String("db.operation", "SELECT"),
 		tel.Attr().String("db.table", "users"),
 	)
@@ -181,7 +182,7 @@ func getUsers(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB) ([]U
 
 	var users []User
 
-	err := tel.MeasureDuration(ctx, "db.query.duration", func() error {
+	err := measureDuration(tel, ctx, "db.query.duration", func() error {
 		rows, err := db.QueryContext(ctx, "SELECT id, name, email, created_at FROM users")
 		if err != nil {
 			return err
@@ -208,7 +209,7 @@ func getUsers(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB) ([]U
 		tel.Attr().Int("db.rows_returned", len(users)),
 	)
 
-	tel.Metric().IncrementCounter(ctx, "db.queries.total",
+	tel.Metric().AddCounter(ctx, "db.queries.total", 1,
 		tel.Attr().String("operation", "SELECT"),
 		tel.Attr().String("table", "users"),
 		tel.Attr().String("status", "success"),
@@ -218,7 +219,7 @@ func getUsers(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB) ([]U
 }
 
 func getUserByID(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB, id string) (*User, error) {
-	ctx, stop := tel.Trace().StartSpanWithAttributes(ctx, "db.query",
+	ctx, stop := tel.Trace().StartSpan(ctx, "db.query",
 		tel.Attr().String("db.operation", "SELECT"),
 		tel.Attr().String("db.table", "users"),
 		tel.Attr().String("user.id", id),
@@ -227,7 +228,7 @@ func getUserByID(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB, i
 
 	var user User
 
-	err := tel.MeasureDuration(ctx, "db.query.duration", func() error {
+	err := measureDuration(tel, ctx, "db.query.duration", func() error {
 		return db.QueryRowContext(ctx,
 			"SELECT id, name, email, created_at FROM users WHERE id = ?",
 			id,
@@ -244,7 +245,7 @@ func getUserByID(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB, i
 		return nil, err
 	}
 
-	tel.Metric().IncrementCounter(ctx, "db.queries.total",
+	tel.Metric().AddCounter(ctx, "db.queries.total", 1,
 		tel.Attr().String("operation", "SELECT"),
 		tel.Attr().String("table", "users"),
 		tel.Attr().String("status", "success"),
@@ -254,7 +255,7 @@ func getUserByID(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB, i
 }
 
 func createUser(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB, name, email string) (int64, error) {
-	ctx, stop := tel.Trace().StartSpanWithAttributes(ctx, "db.insert",
+	ctx, stop := tel.Trace().StartSpan(ctx, "db.insert",
 		tel.Attr().String("db.operation", "INSERT"),
 		tel.Attr().String("db.table", "users"),
 	)
@@ -262,7 +263,7 @@ func createUser(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB, na
 
 	var result sql.Result
 
-	err := tel.MeasureDuration(ctx, "db.insert.duration", func() error {
+	err := measureDuration(tel, ctx, "db.insert.duration", func() error {
 		var err error
 		result, err = db.ExecContext(ctx,
 			"INSERT INTO users (name, email) VALUES (?, ?)",
@@ -273,7 +274,7 @@ func createUser(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB, na
 
 	if err != nil {
 		tel.Trace().RecordError(ctx, err)
-		tel.Metric().IncrementCounter(ctx, "db.queries.total",
+		tel.Metric().AddCounter(ctx, "db.queries.total", 1,
 			tel.Attr().String("operation", "INSERT"),
 			tel.Attr().String("table", "users"),
 			tel.Attr().String("status", "error"),
@@ -287,7 +288,7 @@ func createUser(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB, na
 		tel.Attr().Int64("user.id", id),
 	)
 
-	tel.Metric().IncrementCounter(ctx, "db.queries.total",
+	tel.Metric().AddCounter(ctx, "db.queries.total", 1,
 		tel.Attr().String("operation", "INSERT"),
 		tel.Attr().String("table", "users"),
 		tel.Attr().String("status", "success"),
@@ -296,7 +297,7 @@ func createUser(ctx context.Context, tel *gintelemetry.Telemetry, db *sql.DB, na
 	return id, nil
 }
 
-// WithSpan is a helper that returns a value instead of just error.
+// WithSpan is a custom helper that returns a value instead of just error.
 // It's a standalone generic function since Go doesn't support generic methods.
 func WithSpan[T any](tel *gintelemetry.Telemetry, ctx context.Context, spanName string, fn func(context.Context) (T, error)) (T, error) {
 	newCtx, stop := tel.Trace().StartSpan(ctx, spanName)
@@ -308,4 +309,18 @@ func WithSpan[T any](tel *gintelemetry.Telemetry, ctx context.Context, spanName 
 	}
 
 	return result, err
+}
+
+// measureDuration is a custom helper that measures and records the duration of a function
+func measureDuration(tel *gintelemetry.Telemetry, ctx context.Context, metricName string, fn func() error) error {
+	start := time.Now()
+	err := fn()
+
+	tel.Metric().RecordHistogram(ctx, metricName, time.Since(start).Milliseconds())
+
+	if err != nil {
+		tel.Trace().RecordError(ctx, err)
+	}
+
+	return err
 }

@@ -10,7 +10,7 @@ Demonstrates how to write tests for code instrumented with gintelemetry.
 - Testing with custom contexts
 - Concurrent request testing
 - Benchmarking instrumented code
-- No-op exporters (tests don't require a collector)
+- Tests work without a collector running
 
 ## Running the Tests
 
@@ -155,9 +155,8 @@ func BenchmarkProcessOrder(b *testing.B) {
 
 `NewTestConfig()` creates a configuration that:
 
-- ✅ Uses no-op exporters (no collector needed)
+- ✅ Points to localhost (works even without collector)
 - ✅ Sets log level to Error (reduces test noise)
-- ✅ Disables retries (fails fast)
 - ✅ Uses insecure localhost connection
 - ✅ Safe to use even without a collector running
 
@@ -246,6 +245,7 @@ func TestIntegration(t *testing.T) {
     tel, router, err := gintelemetry.Start(ctx, gintelemetry.Config{
         ServiceName: "integration-test",
         Endpoint:    "localhost:4317",
+        Insecure:    true,
     })
     if err != nil {
         t.Skipf("collector not available: %v", err)

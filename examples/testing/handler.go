@@ -19,37 +19,36 @@ func NewOrderService(tel *gintelemetry.Telemetry) *OrderService {
 }
 
 func (s *OrderService) ProcessOrder(ctx context.Context, orderID string) error {
-	return s.tel.WithSpan(ctx, "order.process", func(ctx context.Context) error {
-		s.tel.Log().Info(ctx, "processing order", "order_id", orderID)
+	// Create a span for the operation
+	ctx, stop := s.tel.Trace().StartSpan(ctx, "order.process")
+	defer stop()
 
-		// Simulate validation
-		if orderID == "" {
-			err := errors.New("order ID is required")
-			s.tel.Trace().RecordError(ctx, err)
-			return err
-		}
+	s.tel.Log().Info(ctx, "processing order", "order_id", orderID)
 
-		// Simulate processing time
-		err := s.tel.MeasureDuration(ctx, "order.validation.duration", func() error {
-			time.Sleep(10 * time.Millisecond)
-			return nil
-		})
-		if err != nil {
-			return err
-		}
+	// Simulate validation
+	if orderID == "" {
+		err := errors.New("order ID is required")
+		s.tel.Trace().RecordError(ctx, err)
+		return err
+	}
 
-		// Record metrics
-		s.tel.Metric().IncrementCounter(ctx, "orders.processed",
-			s.tel.Attr().String("status", "success"),
-		)
+	// Simulate processing time with measurement
+	start := time.Now()
+	time.Sleep(10 * time.Millisecond)
 
-		s.tel.Log().Info(ctx, "order processed successfully", "order_id", orderID)
-		return nil
-	})
+	s.tel.Metric().RecordHistogram(ctx, "order.validation.duration", time.Since(start).Milliseconds())
+
+	// Record metrics
+	s.tel.Metric().AddCounter(ctx, "orders.processed", 1,
+		s.tel.Attr().String("status", "success"),
+	)
+
+	s.tel.Log().Info(ctx, "order processed successfully", "order_id", orderID)
+	return nil
 }
 
 func (s *OrderService) GetOrderStatus(ctx context.Context, orderID string) (string, error) {
-	ctx, stop := s.tel.Trace().StartSpanWithAttributes(ctx, "order.get_status",
+	ctx, stop := s.tel.Trace().StartSpan(ctx, "order.get_status",
 		s.tel.Attr().String("order.id", orderID),
 	)
 	defer stop()
@@ -62,7 +61,7 @@ func (s *OrderService) GetOrderStatus(ctx context.Context, orderID string) (stri
 		return "", err
 	}
 
-	s.tel.Metric().IncrementCounter(ctx, "orders.status_checks")
+	s.tel.Metric().AddCounter(ctx, "orders.status_checks", 1)
 
 	return "completed", nil
 }

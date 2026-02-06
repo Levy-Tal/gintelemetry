@@ -1,21 +1,21 @@
 # Environment Variables Example
 
-Demonstrates how to configure gintelemetry entirely through environment variables, including global attributes.
+Demonstrates how to configure gintelemetry through environment variables and Config struct.
 
 ## What This Example Shows
 
 - Using `OTEL_SERVICE_NAME` for service name
 - Using `OTEL_EXPORTER_OTLP_ENDPOINT` for collector endpoint
-- Using `OTEL_RESOURCE_ATTRIBUTES` for global attributes
-- Zero hardcoded configuration in code
-- Change team, environment, region without recompiling
+- Setting global attributes in Config
+- Zero hardcoded endpoint configuration
+- Change service name without recompiling
 
 ## Why This Matters
 
 With environment variables, you can:
 
 - **Deploy the same binary** to different environments (dev/staging/prod)
-- **Change team/region** without rebuilding
+- **Change endpoints** without rebuilding
 - **Use in containers** (Docker, Kubernetes) with different configs
 - **CI/CD friendly** - configure via pipeline variables
 - **Follow 12-factor app** principles
@@ -42,7 +42,6 @@ cd examples/env-vars
 # Development environment
 export OTEL_SERVICE_NAME=my-api
 export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
-export OTEL_RESOURCE_ATTRIBUTES="team=backend,environment=dev,region=local,version=dev"
 go run main.go
 ```
 
@@ -60,10 +59,10 @@ curl http://localhost:8080/hello
 2. Click "Find Traces"
 3. Click on a trace
 4. Look at the **Process** section - you'll see your global attributes:
-   - `team=backend`
-   - `environment=dev`
-   - `region=local`
-   - `version=dev`
+   - `team=platform`
+   - `environment=production`
+   - `region=us-east-1`
+   - `version=1.0.0`
 
 **Collector Logs** (metrics and logs):
 
@@ -77,7 +76,6 @@ docker compose logs -f otel-collector
 
 ```bash
 export OTEL_SERVICE_NAME=my-api-dev
-export OTEL_RESOURCE_ATTRIBUTES="team=backend,environment=dev,region=local"
 go run main.go
 ```
 
@@ -85,7 +83,7 @@ go run main.go
 
 ```bash
 export OTEL_SERVICE_NAME=my-api-staging
-export OTEL_RESOURCE_ATTRIBUTES="team=backend,environment=staging,region=us-east-1"
+export OTEL_EXPORTER_OTLP_ENDPOINT=staging-collector:4317
 go run main.go
 ```
 
@@ -93,7 +91,7 @@ go run main.go
 
 ```bash
 export OTEL_SERVICE_NAME=my-api
-export OTEL_RESOURCE_ATTRIBUTES="team=backend,environment=production,region=us-east-1,version=1.2.3"
+export OTEL_EXPORTER_OTLP_ENDPOINT=prod-collector:4317
 go run main.go
 ```
 
@@ -123,7 +121,6 @@ docker build -t my-api .
 # Run in different environments
 docker run -e OTEL_SERVICE_NAME=my-api \
   -e OTEL_EXPORTER_OTLP_ENDPOINT=collector:4317 \
-  -e OTEL_RESOURCE_ATTRIBUTES="team=platform,environment=production,region=us-west-2" \
   my-api
 ```
 
@@ -145,49 +142,44 @@ spec:
           value: "my-api"
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: "otel-collector:4317"
-        - name: OTEL_RESOURCE_ATTRIBUTES
-          value: "team=platform,environment=production,region=us-east-1,cluster=prod-1"
 ```
 
-## OTEL_RESOURCE_ATTRIBUTES Format
+## Configuration Options
 
-**Format:** Comma-separated `key=value` pairs
+### Via Environment Variables
 
 ```bash
-export OTEL_RESOURCE_ATTRIBUTES="key1=value1,key2=value2,key3=value3"
+export OTEL_SERVICE_NAME=my-service
+export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
 ```
 
-**Example with common attributes:**
-
-```bash
-export OTEL_RESOURCE_ATTRIBUTES="team=platform,environment=production,region=us-east-1,version=1.2.3,deployment=blue"
-```
-
-**Special characters:** If you need commas or equals signs in values, escape them with backslash:
-
-```bash
-export OTEL_RESOURCE_ATTRIBUTES="description=Hello\, World,equation=2+2\=4"
-```
-
-## Precedence Rules
-
-1. **Config attributes override env vars** for the same key
-2. **Env vars fill in missing** config attributes
-
-**Example:**
+### Via Config Struct
 
 ```go
-// Config has team=frontend
-config := gintelemetry.Config{
+tel, router, err := gintelemetry.Start(ctx, gintelemetry.Config{
+    ServiceName: "my-service",
+    Endpoint:    "localhost:4317",
+    Insecure:    true,
     GlobalAttributes: map[string]string{
-        "team": "frontend",  // This wins
+        "team":        "platform",
+        "environment": "production",
+        "region":      "us-east-1",
+        "version":     "1.0.0",
     },
-}
+})
+```
 
-// But env var has team=backend
-export OTEL_RESOURCE_ATTRIBUTES="team=backend,environment=production"
+### Combining Both
 
-// Result: team=frontend (from config), environment=production (from env)
+Environment variables are used as fallbacks if Config fields are empty:
+
+```go
+// Empty config - reads from env vars
+tel, router, err := gintelemetry.Start(ctx, gintelemetry.Config{
+    // ServiceName comes from OTEL_SERVICE_NAME
+    // Endpoint comes from OTEL_EXPORTER_OTLP_ENDPOINT
+    Insecure: true,
+})
 ```
 
 ## Best Practices
@@ -208,7 +200,7 @@ Standardize across your organization:
 # GitHub Actions example
 env:
   OTEL_SERVICE_NAME: ${{ github.event.repository.name }}
-  OTEL_RESOURCE_ATTRIBUTES: "environment=${{ github.event.inputs.environment }},version=${{ github.sha }}"
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_ENDPOINT }}
 ```
 
 ### 3. Use ConfigMaps in Kubernetes
@@ -219,7 +211,8 @@ kind: ConfigMap
 metadata:
   name: otel-config
 data:
-  OTEL_RESOURCE_ATTRIBUTES: "team=platform,environment=production,region=us-east-1"
+  OTEL_SERVICE_NAME: "my-api"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
 ```
 
 ### 4. Document Your Attributes
@@ -228,16 +221,6 @@ Create a standard attributes document for your organization so all services use 
 
 ## Troubleshooting
 
-### Attributes Not Showing Up
-
-Check if they're being parsed correctly:
-
-```go
-tel.Log().Info(ctx, "startup", "attributes", "should be visible in trace")
-```
-
-Then look in Jaeger under the Process section.
-
 ### Environment Not Loading
 
 Make sure you're setting the env var before starting your app:
@@ -245,10 +228,10 @@ Make sure you're setting the env var before starting your app:
 ```bash
 # ❌ Wrong - env var set after process starts
 go run main.go &
-export OTEL_RESOURCE_ATTRIBUTES="team=platform"
+export OTEL_SERVICE_NAME=my-service
 
 # ✅ Correct - env var set before process starts
-export OTEL_RESOURCE_ATTRIBUTES="team=platform"
+export OTEL_SERVICE_NAME=my-service
 go run main.go
 ```
 

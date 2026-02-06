@@ -14,39 +14,47 @@ type TraceAPI struct {
 
 type Attribute = attribute.KeyValue
 
-// StartSpan creates a new span and returns a context containing the span and a function to end it.
+// StartSpan creates a new span with optional attributes and returns a context containing the span and a function to end it.
 // The returned context should be used for all operations within this span's scope.
 // Always call the returned function (typically with defer) to properly end the span.
 //
 // Example:
 //
-//	ctx, stop := tel.Trace().StartSpan(ctx, "database.query")
+//	ctx, stop := tel.Trace().StartSpan(ctx, "database.query",
+//	    tel.Attr().String("db.table", "users"),
+//	    tel.Attr().String("db.operation", "SELECT"),
+//	)
 //	defer stop()
-//	// ... perform database query ...
-func (t TraceAPI) StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, func()) {
+func (t TraceAPI) StartSpan(ctx context.Context, name string, attrs ...Attribute) (context.Context, func()) {
+	opts := []trace.SpanStartOption{}
+	if len(attrs) > 0 {
+		opts = append(opts, trace.WithAttributes(attrs...))
+	}
 	ctx, span := t.tracer.Start(ctx, name, opts...)
 	return ctx, func() { span.End() }
 }
 
-// StartSpanWithAttributes creates a new span with attributes and returns a context and end function.
-// This is a convenience method that combines StartSpan with initial attributes.
+// StartSpanWithKind creates a new span with a specific kind and optional attributes.
+// Use this for background jobs, client calls, or other non-server spans.
 //
 // Example:
 //
-//	ctx, stop := tel.Trace().StartSpanWithAttributes(ctx, "db.query",
-//	    tel.Attr().String("db.system", "postgres"),
-//	    tel.Attr().String("db.operation", "SELECT"),
+//	ctx, stop := tel.Trace().StartSpanWithKind(ctx, "worker.job",
+//	    gintelemetry.SpanKindInternal,
+//	    tel.Attr().String("job.name", "scraper"),
 //	)
 //	defer stop()
-func (t TraceAPI) StartSpanWithAttributes(ctx context.Context, name string, attrs ...Attribute) (context.Context, func()) {
-	return t.StartSpan(ctx, name, trace.WithAttributes(attrs...))
+func (t TraceAPI) StartSpanWithKind(ctx context.Context, name string, kind SpanKind, attrs ...Attribute) (context.Context, func()) {
+	opts := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKind(kind))}
+	if len(attrs) > 0 {
+		opts = append(opts, trace.WithAttributes(attrs...))
+	}
+	ctx, span := t.tracer.Start(ctx, name, opts...)
+	return ctx, func() { span.End() }
 }
 
 // RecordError records an error in the current span if one exists and is recording.
 // If no span exists or the span is not recording, this is a safe no-op.
-// This method never returns an error itself and never panics.
-//
-// The error is recorded with the span status set to Error.
 //
 // Example:
 //
@@ -63,8 +71,6 @@ func (TraceAPI) RecordError(ctx context.Context, err error) {
 }
 
 // SetAttributes adds attributes to the current span if one exists and is recording.
-// If no span exists or the span is not recording, this is a safe no-op.
-// The context must contain an active span for attributes to be recorded.
 //
 // Example:
 //
@@ -80,8 +86,6 @@ func (TraceAPI) SetAttributes(ctx context.Context, attrs ...Attribute) {
 }
 
 // AddEvent adds an event to the current span if one exists and is recording.
-// Events represent significant points in time within a span's duration.
-// If no span exists or the span is not recording, this is a safe no-op.
 //
 // Example:
 //
@@ -96,12 +100,10 @@ func (TraceAPI) AddEvent(ctx context.Context, name string, attrs ...Attribute) {
 }
 
 // SetStatus sets the status of the current span if one exists and is recording.
-// Use this to mark a span as successful (StatusOK), failed (StatusError), or unset (StatusUnset).
-// If no span exists or the span is not recording, this is a safe no-op.
 //
 // Example:
 //
-//	tel.Trace().SetStatus(ctx, gintelemetry.StatusOK, "operation completed successfully")
+//	tel.Trace().SetStatus(ctx, gintelemetry.StatusOK, "operation completed")
 func (TraceAPI) SetStatus(ctx context.Context, code codes.Code, description string) {
 	span := trace.SpanFromContext(ctx)
 	if span.IsRecording() {
@@ -110,7 +112,6 @@ func (TraceAPI) SetStatus(ctx context.Context, code codes.Code, description stri
 }
 
 // SpanFromContext returns the current span from the context.
-// This is useful for advanced use cases where you need direct access to the span.
 func (TraceAPI) SpanFromContext(ctx context.Context) trace.Span {
 	return trace.SpanFromContext(ctx)
 }

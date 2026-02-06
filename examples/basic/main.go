@@ -30,8 +30,8 @@ func main() {
 		// Logging with automatic trace correlation
 		tel.Log().Info(ctx, "handling hello request")
 
-		// Increment counter with attributes
-		tel.Metric().IncrementCounter(ctx, "requests.total",
+		// Increment counter with attributes - single import!
+		tel.Metric().AddCounter(ctx, "requests.total", 1,
 			tel.Attr().String("endpoint", "hello"),
 			tel.Attr().String("method", "GET"),
 		)
@@ -44,8 +44,8 @@ func main() {
 		ctx := c.Request.Context()
 		id := c.Param("id")
 
-		// Create a span for this operation
-		ctx, stop := tel.Trace().StartSpanWithAttributes(ctx, "process.item",
+		// Create a span for this operation with attributes
+		ctx, stop := tel.Trace().StartSpan(ctx, "process.item",
 			tel.Attr().String("item.id", id),
 		)
 		defer stop()
@@ -61,19 +61,19 @@ func main() {
 			return
 		}
 
-		tel.Metric().IncrementCounter(ctx, "items.processed",
+		tel.Metric().AddCounter(ctx, "items.processed", 1,
 			tel.Attr().String("status", "success"),
 		)
 
 		c.JSON(200, gin.H{"status": "processed", "id": id})
 	})
 
-	// Example using convenience helpers
+	// Example using custom helper
 	router.GET("/measure", func(c *gin.Context) {
 		ctx := c.Request.Context()
 
-		// MeasureDuration automatically records timing and handles errors
-		err := tel.MeasureDuration(ctx, "operation.duration", func() error {
+		// Custom helper that measures duration
+		err := measureDuration(tel, ctx, "operation.duration", func() error {
 			time.Sleep(100 * time.Millisecond) // Simulate work
 			return nil
 		})
@@ -91,16 +91,31 @@ func main() {
 }
 
 func simulateWork(ctx context.Context, tel *gintelemetry.Telemetry, id string) error {
-	// Use WithSpan for automatic span management
-	return tel.WithSpan(ctx, "database.query", func(ctx context.Context) error {
-		tel.Log().Debug(ctx, "querying database", "item_id", id)
+	// Create a span for database query
+	ctx, stop := tel.Trace().StartSpan(ctx, "database.query")
+	defer stop()
 
-		// Simulate database query
-		start := time.Now()
-		time.Sleep(50 * time.Millisecond)
+	tel.Log().Debug(ctx, "querying database", "item_id", id)
 
-		tel.Metric().RecordDuration(ctx, "db.query.duration", time.Since(start))
+	// Simulate database query
+	start := time.Now()
+	time.Sleep(50 * time.Millisecond)
 
-		return nil
-	})
+	tel.Metric().RecordHistogram(ctx, "db.query.duration", time.Since(start).Milliseconds())
+
+	return nil
+}
+
+// measureDuration is a custom helper that measures and records the duration of a function
+func measureDuration(tel *gintelemetry.Telemetry, ctx context.Context, metricName string, fn func() error) error {
+	start := time.Now()
+	err := fn()
+
+	tel.Metric().RecordHistogram(ctx, metricName, time.Since(start).Milliseconds())
+
+	if err != nil {
+		tel.Trace().RecordError(ctx, err)
+	}
+
+	return err
 }
